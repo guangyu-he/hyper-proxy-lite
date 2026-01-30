@@ -1,3 +1,6 @@
+mod addon;
+
+use crate::addon::filter::{blocked_response, FilterRules};
 use anyhow::Result;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::body::Bytes;
@@ -15,10 +18,14 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     println!("Server starts at http://127.0.0.1:8080");
 
+    let rules = FilterRules::new_blacklist(vec!["goldentech.digital"]);
+    let rules = std::sync::Arc::new(rules);
+
     loop {
         let (stream, _) = listener.accept().await?;
+        let rules = rules.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_client(stream).await {
+            if let Err(e) = handle_client(stream, rules).await {
                 eprintln!("Error: {}", e);
             }
         });
@@ -28,13 +35,23 @@ async fn main() -> Result<()> {
 /// Handle a client connection.
 /// This function serves HTTP/1.1 connections and handles both regular HTTP requests
 /// and CONNECT requests for HTTPS tunneling.
-async fn handle_client(stream: TcpStream) -> Result<()> {
+/// It uses the `hyper` crate to manage the HTTP protocol and upgrades connections as needed.
+/// It takes a `TcpStream` representing the client connection and a reference
+/// to the filter rules for domain filtering.
+/// It returns a Result indicating success or failure of the handling process.
+async fn handle_client(stream: TcpStream, rules: std::sync::Arc<FilterRules>) -> Result<()> {
     let io = TokioIo::new(stream);
 
     http1::Builder::new()
         .preserve_header_case(true)
         .title_case_headers(true)
-        .serve_connection(io, service_fn(proxy))
+        .serve_connection(
+            io,
+            service_fn(move |req| {
+                let rules = rules.clone();
+                proxy(req, rules)
+            }),
+        )
         .with_upgrades()
         .await?;
 
@@ -45,7 +62,29 @@ async fn handle_client(stream: TcpStream) -> Result<()> {
 /// It distinguishes between regular HTTP requests and CONNECT requests.
 /// For CONNECT requests, it establishes a tunnel to the target server.
 /// For regular HTTP requests, it forwards the request and returns the response.
-async fn proxy(req: Request<Incoming>) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+/// It also checks the filter rules to determine if the request should be blocked.
+/// If the request is blocked, it returns a blocked response.
+async fn proxy(
+    req: Request<Incoming>,
+    rules: std::sync::Arc<FilterRules>,
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+    let host = req
+        .uri()
+        .authority()
+        .map(|a| a.to_string())
+        .or_else(|| {
+            req.headers()
+                .get("host")
+                .and_then(|h| h.to_str().ok())
+                .map(String::from)
+        })
+        .unwrap_or_default();
+
+    if !rules.is_allowed(&host) {
+        println!("❌ BLOCKED: {}", host);
+        return blocked_response(&host);
+    }
+
     if req.method() == Method::CONNECT {
         handle_connect(req).await
     } else {
