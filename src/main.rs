@@ -2,6 +2,7 @@ mod addon;
 
 use crate::addon::filter::{blocked_response, FilterRules};
 use anyhow::Result;
+use clap::Parser;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty};
 use hyper::body::Bytes;
 use hyper::server::conn::http1;
@@ -10,15 +11,53 @@ use hyper::upgrade::Upgraded;
 use hyper::{body::Incoming, Method, Request, Response};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
+use std::path::PathBuf;
 use tokio::io::copy_bidirectional;
 use tokio::net::{TcpListener, TcpStream};
 
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    /// Path to the filter configuration file
+    #[clap(short, long, value_parser)]
+    filter: Option<PathBuf>,
+
+    /// Blacklists domains (comma-separated)
+    #[clap(short, long, value_parser, use_value_delimiter = true)]
+    blacklist: Option<Vec<String>>,
+
+    /// Whitelists domains (comma-separated)
+    #[clap(short, long, value_parser, use_value_delimiter = true)]
+    whitelist: Option<Vec<String>>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = Args::parse();
+
+    if let Some(filter_path) = args.filter {
+        let rules = FilterRules::read_config_file(filter_path)?;
+        println!("Loaded filter rules from file.");
+        run(rules).await
+    } else if let Some(blacklist) = args.blacklist {
+        let rules = FilterRules::new_blacklist(blacklist);
+        println!("Using command-line blacklist.");
+        run(rules).await
+    } else if let Some(whitelist) = args.whitelist {
+        let rules = FilterRules::new_whitelist(whitelist);
+        println!("Using command-line whitelist.");
+        run(rules).await
+    } else {
+        println!("No filter rules provided. Running without filtering.");
+        let rules = FilterRules::new_blacklist(Vec::<String>::new());
+        run(rules).await
+    }
+}
+
+async fn run(rules: FilterRules) -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:8080").await?;
     println!("Server starts at http://127.0.0.1:8080");
 
-    let rules = FilterRules::new_blacklist(vec!["goldentech.digital"]);
     let rules = std::sync::Arc::new(rules);
 
     loop {

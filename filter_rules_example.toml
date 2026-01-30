@@ -1,0 +1,2 @@
+mode = "Blacklist"
+domains = ["example.com"]
