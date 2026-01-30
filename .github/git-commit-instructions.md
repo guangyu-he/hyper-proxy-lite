@@ -1,0 +1,6 @@
+- Use a line break to separate the subject from the body.
+- Subject line should be concise (50 characters or fewer).
+- Define the type of change (e.g., feat, fix, docs, style, refactor, test, chore).
+- In the body, explain the "what" and "why" of the commit, not the "how".
+- Use bullet points or paragraphs in the body for clarity.
+- Wrap the body at 72 characters.
